@@ -13,26 +13,9 @@ class PasswordEntryRepository extends ServiceEntityRepository
         parent::__construct($registry, PasswordEntry::class);
     }
 
-    /**
-     * Find a PasswordEntry by its created_stamp (second precision, UTC).
-     */
-    public function findByCreatedStamp(\DateTime $createdStamp): ?PasswordEntry
+    public function findByUuid(string $uuid): ?PasswordEntry
     {
-        // Use a native SQL query to avoid Doctrine DateTime timezone conversion issues.
-        // The created_stamp is stored as UTC 'Y-m-d H:i:s'; we compare as a plain string.
-        $stamp = $createdStamp->format('Y-m-d H:i:s');
-
-        $conn   = $this->getEntityManager()->getConnection();
-        $result = $conn->executeQuery(
-            'SELECT id FROM password_entry WHERE created_stamp = ?',
-            [$stamp]
-        )->fetchAssociative();
-
-        if (!$result) {
-            return null;
-        }
-
-        return $this->find((int) $result['id']);
+        return $this->findOneBy(['uuid' => $uuid]);
     }
 
     /**
@@ -40,7 +23,7 @@ class PasswordEntryRepository extends ServiceEntityRepository
      */
     public function deleteExpired(): int
     {
-        return $this->createQueryBuilder('p')
+        return (int) $this->createQueryBuilder('p')
             ->delete()
             ->where('p.validity < :now')
             ->setParameter('now', new \DateTime())

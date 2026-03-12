@@ -2,17 +2,19 @@
     "type": "project",
     "license": "proprietary",
     "require": {
-        "php": ">=8.1",
-        "doctrine/doctrine-bundle": "^2.11",
-        "doctrine/orm": "^2.17",
-        "symfony/console": "6.4.*",
-        "symfony/dotenv": "6.4.*",
+        "php": ">=8.2",
+        "doctrine/doctrine-bundle": "^2.13",
+        "doctrine/orm": "^3.0",
+        "symfony/console": "7.4.*",
+        "symfony/dotenv": "7.4.*",
         "symfony/flex": "^2",
-        "symfony/framework-bundle": "6.4.*",
-        "symfony/runtime": "6.4.*",
-        "symfony/security-csrf": "6.4.*",
-        "symfony/twig-bundle": "6.4.*",
-        "symfony/yaml": "6.4.*",
+        "symfony/framework-bundle": "7.4.*",
+        "symfony/rate-limiter": "7.4.*",
+        "symfony/runtime": "7.4.*",
+        "symfony/security-csrf": "7.4.*",
+        "symfony/twig-bundle": "7.4.*",
+        "symfony/uid": "7.4.*",
+        "symfony/yaml": "7.4.*",
         "twig/twig": "^3.0"
     },
     "config": {
@@ -31,7 +33,7 @@
     "extra": {
         "symfony": {
             "allow-contrib": false,
-            "require": "6.4.*"
+            "require": "7.4.*"
         }
     },
     "scripts": {

@@ -1,0 +1,13 @@
+framework:
+    rate_limiter:
+        # Max 10 new password links created per IP per minute
+        password_create:
+            policy: sliding_window
+            limit: 10
+            interval: '1 minute'
+
+        # Max 20 reveal attempts per IP per minute (brute-force protection)
+        password_reveal:
+            policy: sliding_window
+            limit: 20
+            interval: '1 minute'

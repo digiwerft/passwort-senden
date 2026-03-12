@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Entity\PasswordEntry;
 use App\Repository\PasswordEntryRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
 
 class PasswordService
 {
@@ -15,7 +16,10 @@ class PasswordService
     }
 
     /**
-     * Encrypts the secret, stores it in the DB, and returns the full one-time URL.
+     * Encrypts the secret with AES-256-GCM, stores it in the DB, and returns the one-time URL.
+     *
+     * URL format: {base}/show?secretKey={base64url_key}.{uuid}
+     * The 32-byte AES key is embedded in the URL; the server never stores it.
      */
     public function generate(
         string $plainText,
@@ -23,23 +27,15 @@ class PasswordService
         string $duration,
         string $baseUrl
     ): string {
-        // Generate 256-bit (32-byte) AES key
         $key = random_bytes(32);
 
-        // Encrypt secret with AES-256-ECB
-        $encrypted = base64_encode(
-            openssl_encrypt($plainText, 'AES-256-ECB', $key, OPENSSL_RAW_DATA)
-        );
+        $encrypted = $this->encrypt($plainText, $key);
 
-        // Encrypt link password if provided
-        $encryptedLinkPwd = null;
+        $linkPasswordHash = null;
         if ($linkPassword !== null && $linkPassword !== '') {
-            $encryptedLinkPwd = base64_encode(
-                openssl_encrypt($linkPassword, 'AES-256-ECB', $key, OPENSSL_RAW_DATA)
-            );
+            $linkPasswordHash = password_hash($linkPassword, PASSWORD_ARGON2ID);
         }
 
-        // Calculate validity
         $validity = match ($duration) {
             'HOURS' => new \DateTime('+1 hour'),
             'DAYS'  => new \DateTime('+1 day'),
@@ -47,20 +43,18 @@ class PasswordService
             default => new \DateTime('+1 day'),
         };
 
-        // Persist entry
+        $uuid = Uuid::v4()->toRfc4122();
+
         $entry = new PasswordEntry();
+        $entry->setUuid($uuid);
         $entry->setSecret($encrypted);
-        $entry->setLinkPassword($encryptedLinkPwd);
+        $entry->setLinkPasswordHash($linkPasswordHash);
         $entry->setValidity($validity);
 
         $this->entityManager->persist($entry);
         $this->entityManager->flush();
 
-        // Build the secret key: base64(aes_key) . epoch_ms
-        $keyBase64    = base64_encode($key); // 44 chars ending in ==
-        $timestampMs  = $entry->getCreatedStamp()->getTimestamp() * 1000;
-        $secretKeyRaw = $keyBase64 . $timestampMs;
-        $secretKey    = urlencode($secretKeyRaw);
+        $secretKey = $this->encodeKey($key) . '.' . $uuid;
 
         return $baseUrl . '/show?secretKey=' . $secretKey;
     }
@@ -75,75 +69,16 @@ class PasswordService
             return false;
         }
 
-        $entry = $this->passwordEntryRepository->findByCreatedStamp($parsed['createdStamp']);
+        $entry = $this->passwordEntryRepository->findByUuid($parsed['uuid']);
         if ($entry === null) {
             return false;
         }
 
-        // Check if entry has expired
-        if ($entry->getValidity() < new \DateTime()) {
-            return false;
-        }
-
-        return true;
+        return $entry->getValidity() >= new \DateTime();
     }
 
     /**
-     * Decrypts and returns the plaintext secret, then deletes the record.
-     * Returns null if the entry is not found, expired, or the link password is wrong.
-     */
-    public function reveal(string $secretKey, ?string $linkPassword): ?string
-    {
-        $parsed = $this->parseSecretKey($secretKey);
-        if ($parsed === null) {
-            return null;
-        }
-
-        $key         = $parsed['key'];
-        $createdStamp = $parsed['createdStamp'];
-
-        $entry = $this->passwordEntryRepository->findByCreatedStamp($createdStamp);
-        if ($entry === null) {
-            return null;
-        }
-
-        // Check expiry
-        if ($entry->getValidity() < new \DateTime()) {
-            $this->entityManager->remove($entry);
-            $this->entityManager->flush();
-            return null;
-        }
-
-        // Verify link password if one was set
-        if ($entry->getLinkPassword() !== null) {
-            if ($linkPassword === null || $linkPassword === '') {
-                return null;
-            }
-            $expectedEncryptedLinkPwd = base64_encode(
-                openssl_encrypt($linkPassword, 'AES-256-ECB', $key, OPENSSL_RAW_DATA)
-            );
-            if (!hash_equals($entry->getLinkPassword(), $expectedEncryptedLinkPwd)) {
-                return null;
-            }
-        }
-
-        // Decrypt the secret
-        $plainText = openssl_decrypt(
-            base64_decode($entry->getSecret()),
-            'AES-256-ECB',
-            $key,
-            OPENSSL_RAW_DATA
-        );
-
-        // Delete the record immediately (one-time use)
-        $this->entityManager->remove($entry);
-        $this->entityManager->flush();
-
-        return $plainText !== false ? $plainText : null;
-    }
-
-    /**
-     * Checks whether this secret key entry requires a link password.
+     * Checks whether this secret key requires a link password.
      */
     public function requiresLinkPassword(string $secretKey): bool
     {
@@ -152,51 +87,149 @@ class PasswordService
             return false;
         }
 
-        $entry = $this->passwordEntryRepository->findByCreatedStamp($parsed['createdStamp']);
-        if ($entry === null) {
-            return false;
-        }
+        $entry = $this->passwordEntryRepository->findByUuid($parsed['uuid']);
 
-        return $entry->getLinkPassword() !== null;
+        return $entry !== null && $entry->getLinkPasswordHash() !== null;
     }
 
     /**
-     * Parses the URL-encoded secret key into its components.
+     * Decrypts and returns the plaintext secret, then deletes the record (one-time use).
+     * Returns null if the entry is missing, expired, or the link password is wrong.
+     */
+    public function reveal(string $secretKey, ?string $linkPassword): ?string
+    {
+        $parsed = $this->parseSecretKey($secretKey);
+        if ($parsed === null) {
+            return null;
+        }
+
+        $key  = $parsed['key'];
+        $uuid = $parsed['uuid'];
+
+        $entry = $this->passwordEntryRepository->findByUuid($uuid);
+        if ($entry === null) {
+            return null;
+        }
+
+        if ($entry->getValidity() < new \DateTime()) {
+            $this->entityManager->remove($entry);
+            $this->entityManager->flush();
+            return null;
+        }
+
+        if ($entry->getLinkPasswordHash() !== null) {
+            if ($linkPassword === null || $linkPassword === '') {
+                return null;
+            }
+            if (!password_verify($linkPassword, $entry->getLinkPasswordHash())) {
+                return null;
+            }
+        }
+
+        $plainText = $this->decrypt($entry->getSecret(), $key);
+
+        // Always delete after a reveal attempt that passes all checks (one-time use)
+        $this->entityManager->remove($entry);
+        $this->entityManager->flush();
+
+        return $plainText;
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Encrypts $plaintext with AES-256-GCM (authenticated encryption).
+     * Stored format: base64(nonce[12] . tag[16] . ciphertext)
+     */
+    private function encrypt(string $plaintext, string $key): string
+    {
+        $nonce = random_bytes(12);
+        $tag   = '';
+
+        $ciphertext = openssl_encrypt(
+            $plaintext,
+            'aes-256-gcm',
+            $key,
+            OPENSSL_RAW_DATA,
+            $nonce,
+            $tag,
+            '',
+            16,
+        );
+
+        if ($ciphertext === false) {
+            throw new \RuntimeException('Encryption failed.');
+        }
+
+        return base64_encode($nonce . $tag . $ciphertext);
+    }
+
+    /**
+     * Decrypts AES-256-GCM ciphertext. Returns null on any failure (wrong key, corrupted data).
+     */
+    private function decrypt(string $encoded, string $key): ?string
+    {
+        $raw = base64_decode($encoded, strict: true);
+        if ($raw === false || strlen($raw) < 28) {
+            return null;
+        }
+
+        $nonce      = substr($raw, 0, 12);
+        $tag        = substr($raw, 12, 16);
+        $ciphertext = substr($raw, 28);
+
+        $plaintext = openssl_decrypt(
+            $ciphertext,
+            'aes-256-gcm',
+            $key,
+            OPENSSL_RAW_DATA,
+            $nonce,
+            $tag,
+        );
+
+        return $plaintext === false ? null : $plaintext;
+    }
+
+    /**
+     * Encodes the 32-byte AES key as URL-safe base64 without padding (43 chars).
+     */
+    private function encodeKey(string $key): string
+    {
+        return rtrim(strtr(base64_encode($key), '+/', '-_'), '=');
+    }
+
+    /**
+     * Parses the secretKey token.
      *
-     * Format: urlencode(base64(aes_key) . epoch_ms)
-     * The base64 key is 44 chars ending in '==' or '=' (always ends with '=').
-     * We find the last '=' in the decoded string; everything up to and including
-     * it is the base64 key, everything after is the epoch ms timestamp.
+     * Format: {base64url_key}.{uuid}
+     *   - base64url_key: 43 URL-safe base64 chars (32 raw bytes, no padding)
+     *   - uuid: RFC 4122 UUID v4 string
      *
-     * @return array{key: string, createdStamp: \DateTime}|null
+     * @return array{key: string, uuid: string}|null
      */
     private function parseSecretKey(string $secretKey): ?array
     {
-        // Symfony already URL-decodes query parameters (%2B→+, %2F→/, %3D→=).
-        // Calling urldecode() again would corrupt the base64 key by turning + into spaces.
-        $decoded = $secretKey;
-
-        $lastEq = strrpos($decoded, '=');
-        if ($lastEq === false) {
+        $dotPos = strpos($secretKey, '.');
+        if ($dotPos !== 43) {
             return null;
         }
 
-        $keyBase64   = substr($decoded, 0, $lastEq + 1);
-        $timestampMs = substr($decoded, $lastEq + 1);
+        $keyBase64url = substr($secretKey, 0, 43);
+        $uuidStr      = substr($secretKey, 44);
 
-        if (!is_numeric($timestampMs)) {
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $uuidStr)) {
             return null;
         }
 
-        $key = base64_decode($keyBase64);
-        if (strlen($key) !== 32) {
+        $padding = str_repeat('=', (4 - 43 % 4) % 4); // 43 % 4 = 3 → 1 padding char
+        $key     = base64_decode(strtr($keyBase64url, '-_', '+/') . $padding, strict: true);
+
+        if ($key === false || strlen($key) !== 32) {
             return null;
         }
 
-        $timestampSeconds = intdiv((int) $timestampMs, 1000);
-        $createdStamp     = new \DateTime('@' . $timestampSeconds);
-        $createdStamp->setTimezone(new \DateTimeZone('UTC'));
-
-        return ['key' => $key, 'createdStamp' => $createdStamp];
+        return ['key' => $key, 'uuid' => $uuidStr];
     }
 }

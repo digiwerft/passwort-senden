@@ -7,7 +7,7 @@ use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity(repositoryClass: PasswordEntryRepository::class)]
 #[ORM\Table(name: 'password_entry')]
-#[ORM\Index(columns: ['created_stamp'], name: 'idx_created_stamp')]
+#[ORM\Index(columns: ['uuid'], name: 'idx_uuid')]
 #[ORM\Index(columns: ['validity'], name: 'idx_validity')]
 #[ORM\HasLifecycleCallbacks]
 class PasswordEntry
@@ -17,17 +17,31 @@ class PasswordEntry
     #[ORM\Column(type: 'bigint', options: ['unsigned' => true])]
     private ?int $id = null;
 
+    /**
+     * Unique identifier embedded in the share URL. Used to look up entries
+     * without exposing any sequential/predictable identifiers.
+     */
+    #[ORM\Column(name: 'uuid', type: 'string', length: 36, unique: true)]
+    private string $uuid = '';
+
     #[ORM\Column(name: 'created_stamp', type: 'datetime')]
     private ?\DateTime $createdStamp = null;
 
     #[ORM\Column(name: 'modified_stamp', type: 'datetime', nullable: true)]
     private ?\DateTime $modifiedStamp = null;
 
+    /**
+     * AES-256-GCM encrypted secret. Format: base64(nonce[12] . tag[16] . ciphertext).
+     */
     #[ORM\Column(type: 'text')]
     private string $secret = '';
 
-    #[ORM\Column(name: 'link_password', type: 'text', nullable: true)]
-    private ?string $linkPassword = null;
+    /**
+     * Argon2id hash of the optional link password. Stored as a plain hash —
+     * the AES key in the URL is never involved in link-password verification.
+     */
+    #[ORM\Column(name: 'link_password_hash', type: 'text', nullable: true)]
+    private ?string $linkPasswordHash = null;
 
     #[ORM\Column(type: 'datetime')]
     private ?\DateTime $validity = null;
@@ -49,26 +63,25 @@ class PasswordEntry
         return $this->id;
     }
 
+    public function getUuid(): string
+    {
+        return $this->uuid;
+    }
+
+    public function setUuid(string $uuid): static
+    {
+        $this->uuid = $uuid;
+        return $this;
+    }
+
     public function getCreatedStamp(): ?\DateTime
     {
         return $this->createdStamp;
     }
 
-    public function setCreatedStamp(\DateTime $createdStamp): static
-    {
-        $this->createdStamp = $createdStamp;
-        return $this;
-    }
-
     public function getModifiedStamp(): ?\DateTime
     {
         return $this->modifiedStamp;
-    }
-
-    public function setModifiedStamp(?\DateTime $modifiedStamp): static
-    {
-        $this->modifiedStamp = $modifiedStamp;
-        return $this;
     }
 
     public function getSecret(): string
@@ -82,14 +95,14 @@ class PasswordEntry
         return $this;
     }
 
-    public function getLinkPassword(): ?string
+    public function getLinkPasswordHash(): ?string
     {
-        return $this->linkPassword;
+        return $this->linkPasswordHash;
     }
 
-    public function setLinkPassword(?string $linkPassword): static
+    public function setLinkPasswordHash(?string $linkPasswordHash): static
     {
-        $this->linkPassword = $linkPassword;
+        $this->linkPasswordHash = $linkPasswordHash;
         return $this;
     }
 
