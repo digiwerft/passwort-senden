@@ -14,4 +14,3 @@
 !/var/log/.gitkeep
 /vendor/
 ###< symfony/framework-bundle ###
-.env
