@@ -7,11 +7,17 @@ use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
- * Adds security-relevant HTTP response headers to every request.
+ * Applies all security-relevant HTTP response headers.
  *
- * Referrer-Policy: no-referrer is critical here — the AES key is embedded
- * in the share URL's query string, and without this header it would leak
- * via the Referer header to CDN or any third-party resource.
+ * Key design decisions:
+ * - Referrer-Policy: no-referrer prevents the AES key (embedded in the share
+ *   URL query string) from leaking to CDN servers via the Referer header.
+ * - Cache-Control: no-store ensures browsers never cache pages that may
+ *   contain a revealed secret.
+ * - script-src uses 'self' + the pinned CDN origin; no 'unsafe-inline'.
+ *   All JavaScript lives in /js/app.js (served as a static file).
+ * - style-src allows 'unsafe-inline' for the inline <style> block; inline
+ *   styles cannot execute code so this is an acceptable trade-off.
  */
 class SecurityHeadersSubscriber implements EventSubscriberInterface
 {
@@ -29,6 +35,9 @@ class SecurityHeadersSubscriber implements EventSubscriberInterface
         $response = $event->getResponse();
         $request  = $event->getRequest();
 
+        // Never cache — pages may contain revealed secrets or share links
+        $response->headers->set('Cache-Control', 'no-store, private');
+
         // Prevent MIME-type sniffing
         $response->headers->set('X-Content-Type-Options', 'nosniff');
 
@@ -36,20 +45,23 @@ class SecurityHeadersSubscriber implements EventSubscriberInterface
         $response->headers->set('X-Frame-Options', 'DENY');
 
         // Critical: suppress the Referer header so the AES key in the share
-        // URL never leaks to CDN servers (Bootstrap JS/CSS on jsdelivr.net).
+        // URL never leaks to CDN servers (Bootstrap JS/CSS on jsdelivr.net)
         $response->headers->set('Referrer-Policy', 'no-referrer');
 
-        // Permissions Policy: disable browser features not needed by this app
+        // Disable browser features not needed by this app
         $response->headers->set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
 
+        // Block cross-domain policy files (Flash/Java legacy attack surface)
+        $response->headers->set('X-Permitted-Cross-Domain-Policies', 'none');
+
         // Content Security Policy
-        // - script-src/style-src allow jsdelivr.net (Bootstrap CDN) + inline
-        //   styles/scripts present in the Twig templates
-        // - form-action 'self' prevents forms from submitting to external URLs
-        // - frame-ancestors 'none' is a stronger alternative to X-Frame-Options
+        // - script-src: 'self' covers /js/app.js; jsdelivr.net covers Bootstrap.
+        //   No 'unsafe-inline' — event handlers use addEventListener in app.js.
+        // - style-src: 'unsafe-inline' is acceptable here (inline <style> block);
+        //   styles cannot execute arbitrary code.
         $csp = implode('; ', [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+            "script-src 'self' https://cdn.jsdelivr.net",
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
             "img-src 'self' data:",
             "font-src 'self'",
@@ -60,7 +72,7 @@ class SecurityHeadersSubscriber implements EventSubscriberInterface
         ]);
         $response->headers->set('Content-Security-Policy', $csp);
 
-        // HTTP Strict Transport Security (only send over HTTPS)
+        // HTTP Strict Transport Security (only meaningful over HTTPS)
         if ($request->isSecure()) {
             $response->headers->set(
                 'Strict-Transport-Security',

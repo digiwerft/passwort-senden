@@ -3,25 +3,31 @@
 namespace App\Controller;
 
 use App\Service\PasswordService;
+use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
 use Symfony\Component\RateLimiter\RateLimiterFactory;
 use Symfony\Component\Routing\Attribute\Route;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 class PasswordController extends AbstractController
 {
-    private const MAX_SECRET_LENGTH       = 50_000;
+    private const MAX_SECRET_LENGTH        = 50_000;
     private const MAX_LINK_PASSWORD_LENGTH = 1_024;
 
     public function __construct(
         private readonly PasswordService $passwordService,
+        private readonly LoggerInterface $logger,
         #[Autowire(service: 'limiter.password_create')]
         private readonly RateLimiterFactory $createLimiter,
         #[Autowire(service: 'limiter.password_reveal')]
         private readonly RateLimiterFactory $revealLimiter,
+        #[Autowire(service: 'limiter.password_reveal_per_uuid')]
+        private readonly RateLimiterFactory $revealPerUuidLimiter,
+        #[Autowire(service: 'limiter.password_show')]
+        private readonly RateLimiterFactory $showLimiter,
     ) {
     }
 
@@ -34,12 +40,13 @@ class PasswordController extends AbstractController
     #[Route('/', name: 'password_create_post', methods: ['POST'])]
     public function createPost(Request $request): Response
     {
-        $limiter = $this->createLimiter->create($request->getClientIp());
-        if (!$limiter->consume()->isAccepted()) {
+        if (!$this->createLimiter->create($request->getClientIp())->consume()->isAccepted()) {
+            $this->logger->warning('rate_limit.create', ['ip' => $request->getClientIp()]);
             throw new TooManyRequestsHttpException();
         }
 
         if (!$this->isCsrfTokenValid('create_password', $request->request->get('_csrf_token'))) {
+            $this->logger->warning('csrf.create_failed', ['ip' => $request->getClientIp()]);
             $this->addFlash('error', 'Ungültige Anfrage (CSRF).');
             return $this->redirectToRoute('password_create');
         }
@@ -70,6 +77,7 @@ class PasswordController extends AbstractController
         $baseUrl = $request->getSchemeAndHttpHost();
         $link    = $this->passwordService->generate($secret, $linkPassword, $duration, $baseUrl);
 
+        $this->logger->info('password.created', ['has_link_password' => $linkPassword !== null, 'duration' => $duration]);
         $this->addFlash('generated_link', $link);
 
         return $this->redirectToRoute('password_create');
@@ -78,6 +86,10 @@ class PasswordController extends AbstractController
     #[Route('/show', name: 'password_show', methods: ['GET'])]
     public function show(Request $request): Response
     {
+        if (!$this->showLimiter->create($request->getClientIp())->consume()->isAccepted()) {
+            throw new TooManyRequestsHttpException();
+        }
+
         $secretKey = $request->query->get('secretKey', '');
 
         if ($secretKey === '') {
@@ -100,12 +112,15 @@ class PasswordController extends AbstractController
     #[Route('/show', name: 'password_show_post', methods: ['POST'])]
     public function showPost(Request $request): Response
     {
-        $limiter = $this->revealLimiter->create($request->getClientIp());
-        if (!$limiter->consume()->isAccepted()) {
+        $ip = $request->getClientIp();
+
+        if (!$this->revealLimiter->create($ip)->consume()->isAccepted()) {
+            $this->logger->warning('rate_limit.reveal_ip', ['ip' => $ip]);
             throw new TooManyRequestsHttpException();
         }
 
         if (!$this->isCsrfTokenValid('show_password', $request->request->get('_csrf_token'))) {
+            $this->logger->warning('csrf.reveal_failed', ['ip' => $ip]);
             $this->addFlash('error', 'Ungültige Anfrage (CSRF).');
             return $this->redirectToRoute('password_create');
         }
@@ -118,13 +133,21 @@ class PasswordController extends AbstractController
             return $this->redirectToRoute('password_create');
         }
 
+        // Per-UUID rate limit — blocks distributed brute-force across many IPs
+        if (!$this->revealPerUuidLimiter->create($secretKey)->consume()->isAccepted()) {
+            $this->logger->warning('rate_limit.reveal_uuid', ['ip' => $ip]);
+            throw new TooManyRequestsHttpException();
+        }
+
         $plainText = $this->passwordService->reveal($secretKey, $linkPassword);
 
         if ($plainText === null) {
+            $this->logger->notice('password.reveal_failed', ['ip' => $ip]);
             $this->addFlash('reveal_error', 'Das Passwort konnte nicht entschlüsselt werden. Möglicherweise ist das Linkpasswort falsch oder der Link ist abgelaufen.');
             return $this->redirectToRoute('password_show', ['secretKey' => $secretKey]);
         }
 
+        $this->logger->info('password.revealed');
         $this->addFlash('revealed_password', $plainText);
 
         return $this->redirectToRoute('password_revealed');

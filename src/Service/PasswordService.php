@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Entity\PasswordEntry;
 use App\Repository\PasswordEntryRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Uid\Uuid;
 
 class PasswordService
@@ -12,6 +13,7 @@ class PasswordService
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
         private readonly PasswordEntryRepository $passwordEntryRepository,
+        private readonly LoggerInterface $logger,
     ) {
     }
 
@@ -95,11 +97,15 @@ class PasswordService
     /**
      * Decrypts and returns the plaintext secret, then deletes the record (one-time use).
      * Returns null if the entry is missing, expired, or the link password is wrong.
+     *
+     * A random delay is applied before every failure response to prevent
+     * timing-based enumeration of which secret keys exist vs. wrong password.
      */
     public function reveal(string $secretKey, ?string $linkPassword): ?string
     {
         $parsed = $this->parseSecretKey($secretKey);
         if ($parsed === null) {
+            $this->timingDelay();
             return null;
         }
 
@@ -108,20 +114,27 @@ class PasswordService
 
         $entry = $this->passwordEntryRepository->findByUuid($uuid);
         if ($entry === null) {
+            $this->logger->notice('password.not_found', ['uuid' => $uuid]);
+            $this->timingDelay();
             return null;
         }
 
         if ($entry->getValidity() < new \DateTime()) {
             $this->entityManager->remove($entry);
             $this->entityManager->flush();
+            $this->logger->notice('password.expired', ['uuid' => $uuid]);
+            $this->timingDelay();
             return null;
         }
 
         if ($entry->getLinkPasswordHash() !== null) {
             if ($linkPassword === null || $linkPassword === '') {
+                $this->timingDelay();
                 return null;
             }
             if (!password_verify($linkPassword, $entry->getLinkPasswordHash())) {
+                $this->logger->notice('password.wrong_link_password', ['uuid' => $uuid]);
+                $this->timingDelay();
                 return null;
             }
         }
@@ -131,6 +144,12 @@ class PasswordService
         // Always delete after a reveal attempt that passes all checks (one-time use)
         $this->entityManager->remove($entry);
         $this->entityManager->flush();
+
+        if ($plainText === null) {
+            $this->logger->error('password.decrypt_failed', ['uuid' => $uuid]);
+            $this->timingDelay();
+            return null;
+        }
 
         return $plainText;
     }
@@ -231,5 +250,14 @@ class PasswordService
         }
 
         return ['key' => $key, 'uuid' => $uuidStr];
+    }
+
+    /**
+     * Adds a random delay (200–500 ms) to all failure paths in reveal().
+     * Prevents timing-based enumeration of valid UUIDs vs. wrong passwords.
+     */
+    private function timingDelay(): void
+    {
+        usleep(random_int(200_000, 500_000));
     }
 }
