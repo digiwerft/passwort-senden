@@ -1,0 +1,134 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Link erstellen – Cyber-Securitas{% endblock %}
+
+{% block body %}
+<div class="row justify-content-center">
+    <div class="col-12 col-md-8 col-lg-6">
+
+        {# ── Error flash ── #}
+        {% for message in app.flashes('error') %}
+            <div class="alert alert-danger alert-dismissible fade show mb-4" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        {% endfor %}
+
+        {# ── Generated link flash ── #}
+        {% set generatedLinks = app.flashes('generated_link') %}
+        {% if generatedLinks|length > 0 %}
+            <div class="card mb-4">
+                <div class="card-header text-success">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                        <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+                    </svg>
+                    Ihr sicherer Link wurde erstellt
+                </div>
+                <div class="card-body">
+                    {% for link in generatedLinks %}
+                        <p class="text-muted small mb-2">Teilen Sie diesen Link mit dem Empfänger. Er kann nur <strong>einmalig</strong> geöffnet werden.</p>
+                        <div class="link-display mb-3" id="generatedLink{{ loop.index }}">{{ link }}</div>
+                        <button
+                            class="btn btn-outline-secondary btn-sm"
+                            id="copyBtn{{ loop.index }}"
+                            onclick="copyToClipboard('{{ link|e('js') }}', 'copyBtn{{ loop.index }}')"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                            </svg>
+                            Link kopieren
+                        </button>
+                    {% endfor %}
+                    <hr class="my-3">
+                    <p class="text-muted small mb-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+                        </svg>
+                        Zero-Knowledge-Verschlüsselung: Der Schlüssel ist nur im Link enthalten und wird niemals auf dem Server gespeichert.
+                    </p>
+                </div>
+            </div>
+        {% endif %}
+
+        {# ── Create form ── #}
+        <div class="card">
+            <div class="card-header">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                    <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+                </svg>
+                Link erstellen
+            </div>
+            <div class="card-body">
+                <form method="post" action="/">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token('create_password') }}">
+
+                    <div class="mb-4">
+                        <label for="secret" class="form-label">Passwort <span class="text-danger">*</span></label>
+                        <textarea
+                            class="form-control"
+                            id="secret"
+                            name="secret"
+                            rows="4"
+                            placeholder="Geben Sie hier das Passwort oder den geheimen Text ein…"
+                            required
+                        ></textarea>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="link_password" class="form-label">Optionales Linkpasswort</label>
+                        <input
+                            type="password"
+                            class="form-control"
+                            id="link_password"
+                            name="link_password"
+                            placeholder="Leer lassen für keinen zusätzlichen Schutz"
+                            autocomplete="new-password"
+                        >
+                        <div class="form-text">Falls gesetzt, muss der Empfänger dieses Passwort eingeben, um den Link zu öffnen.</div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="duration" class="form-label">Gültigkeit</label>
+                        <select class="form-select" id="duration" name="duration">
+                            <option value="HOURS">1 Stunde</option>
+                            <option value="DAYS" selected>1 Tag</option>
+                            <option value="WEEKS">1 Woche</option>
+                        </select>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger btn-lg">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                                <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+                            </svg>
+                            kostenlos verschlüsseln
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block javascripts %}
+<script>
+function copyToClipboard(text, btnId) {
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById(btnId);
+        btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg> Kopiert!';
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('btn-success');
+        setTimeout(() => {
+            btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg> Link kopieren';
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-outline-secondary');
+        }, 3000);
+    }).catch(() => {
+        alert('Kopieren fehlgeschlagen. Bitte manuell kopieren.');
+    });
+}
+</script>
+{% endblock %}
