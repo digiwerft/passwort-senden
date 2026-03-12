@@ -59,7 +59,7 @@ Expired secrets are not automatically deleted on reveal. Run the cleanup command
 
 ```bash
 # crontab — run every hour
-0 * * * * php /var/www/password-senden/bin/console app:cleanup-passwords
+0 * * * * php /var/www/passwort-senden/bin/console app:cleanup-passwords
 ```
 
 ## Tech Stack
